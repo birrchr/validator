@@ -44,10 +44,6 @@ data-validate = "data_validator.cli:main"
 # Run `uv lock` after editing dependencies to regenerate uv.lock.
 
 [tool.uv]
-# Pin the Python interpreter used by `uv run` / `uv sync`.
-# Override per-environment with: uv sync --python 3.12
-python = "3.12"
-
 # Publish to Artifactory via: uv publish --index internal
 # Credentials are read from UV_PUBLISH_TOKEN or keyring.
 [[tool.uv.index]]

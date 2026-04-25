@@ -326,11 +326,18 @@ def report_univariate(
         ]:
             rows.append(_long_frame(source_file, "univariate", metric, col, None, val))
 
-        # Histogram bins
+        # Histogram bins — use FLOOR-based bucketing for compatibility across
+        # all DuckDB versions (width_bucket availability varies by version).
         if mn is not None and mx is not None and mn != mx:
             bin_q = f"""
                 SELECT
-                    width_bucket("{col}", {mn}, {mx}, {n_histogram_bins}) AS bin,
+                    LEAST(
+                        {n_histogram_bins},
+                        CAST(FLOOR(
+                            ({n_histogram_bins} * (CAST("{col}" AS DOUBLE) - {mn}))
+                            / ({mx} - {mn})
+                        ) AS INTEGER) + 1
+                    ) AS bin,
                     COUNT(*) AS freq
                 FROM {table}
                 WHERE "{col}" IS NOT NULL
@@ -339,7 +346,7 @@ def report_univariate(
             """
             bin_rows = con.execute(bin_q).fetchall()
             for bin_num, freq in bin_rows:
-                bin_label = f"hist_bin_{bin_num}"
+                bin_label = f"hist_bin_{bin_num:03d}"
                 rows.append(_long_frame(
                     source_file, "univariate_histogram", "frequency",
                     col, bin_label, freq
