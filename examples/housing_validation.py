@@ -5,8 +5,9 @@ Full worked example demonstrating DataValidator with user-defined
 cross-tabulations against a hypothetical housing survey dataset.
 
 Run from the repo root:
-    python examples/housing_validation.py
+    uv run python examples/housing_validation.py
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,6 +28,7 @@ logging.basicConfig(
 # ---------------------------------------------------------------------------
 # 1. Generate a synthetic housing dataset for demonstration
 # ---------------------------------------------------------------------------
+
 
 def make_sample_data(path: Path, n: int = 50_000):
     con = duckdb.connect()
@@ -79,75 +81,75 @@ def make_sample_data(path: Path, n: int = 50_000):
 # 2. Run validation
 # ---------------------------------------------------------------------------
 
+
 def main():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        data_path = Path(tmpdir) / "housing_survey.parquet"
-        output_dir = Path(tmpdir) / "output"
-        make_sample_data(data_path)
+    data_path = Path("examples/housing_survey.parquet")
+    output_dir = Path("examples/output")
 
-        # -- User-defined tabulations -------------------------------------------
-        tabulations = [
-            # Classic year × province × housing type dwelling count
-            TabulationSpec(
-                dimensions=["survey_year", "province", "housing_type"],
-                stats=[
-                    StatSpec("dwelling_count", "COUNT(*)"),
-                    StatSpec("avg_assessed_value", "AVG(assessed_value)"),
-                    StatSpec("median_assessed_value", "MEDIAN(assessed_value)"),
-                ],
-                label="year_prov_housing",
-            ),
+    make_sample_data(data_path)
 
-            # CMA/CA type breakdown with vacancy rate
-            TabulationSpec(
-                dimensions=["survey_year", "cma_ca_type", "tenure"],
-                stats=[
-                    StatSpec("dwelling_count", "COUNT(*)"),
-                    StatSpec("vacancy_rate_pct",
-                             "100.0 * SUM(is_vacant) / COUNT(*)"),
-                    StatSpec("avg_rooms", "AVG(n_rooms)"),
-                ],
-                label="year_cmaca_tenure",
-            ),
+    # -- User-defined tabulations -------------------------------------------
+    tabulations = [
+        # Classic year × province × housing type dwelling count
+        TabulationSpec(
+            dimensions=["survey_year", "province", "housing_type"],
+            stats=[
+                StatSpec("dwelling_count", "COUNT(*)"),
+                StatSpec("avg_assessed_value", "AVG(assessed_value)"),
+                StatSpec("median_assessed_value", "MEDIAN(assessed_value)"),
+            ],
+            label="year_prov_housing",
+        ),
+        # CMA/CA type breakdown with vacancy rate
+        TabulationSpec(
+            dimensions=["survey_year", "cma_ca_type", "tenure"],
+            stats=[
+                StatSpec("dwelling_count", "COUNT(*)"),
+                StatSpec("vacancy_rate_pct", "100.0 * SUM(is_vacant) / COUNT(*)"),
+                StatSpec("avg_rooms", "AVG(n_rooms)"),
+            ],
+            label="year_cmaca_tenure",
+        ),
+        # Province × tenure — filtered to owned dwellings only
+        TabulationSpec(
+            dimensions=["province", "housing_type"],
+            stats=[
+                StatSpec("total_assessed_value", "SUM(assessed_value)"),
+                StatSpec(
+                    "p90_assessed_value",
+                    "PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY assessed_value)",
+                ),
+            ],
+            filters="tenure = 'Owned'",
+            label="owned_prov_housing_value",
+        ),
+    ]
 
-            # Province × tenure — filtered to owned dwellings only
-            TabulationSpec(
-                dimensions=["province", "housing_type"],
-                stats=[
-                    StatSpec("total_assessed_value", "SUM(assessed_value)"),
-                    StatSpec("p90_assessed_value",
-                             "PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY assessed_value)"),
-                ],
-                filters="tenure = 'Owned'",
-                label="owned_prov_housing_value",
-            ),
-        ]
+    with DataValidator(
+        source_path=data_path,
+        output_dir=output_dir,
+        id_columns=["record_id"],
+        memory_limit="2GB",
+        string_delimiter=" ",
+    ) as v:
+        results = v.run_all(tabulation_specs=tabulations)
+        outputs = v.list_outputs()
 
-        with DataValidator(
-            source_path=data_path,
-            output_dir=output_dir,
-            id_columns=["record_id"],
-            memory_limit="2GB",
-            string_delimiter=" ",
-        ) as v:
-            results = v.run_all(tabulation_specs=tabulations)
-            outputs = v.list_outputs()
+    print(f"\n{'=' * 60}")
+    print(f"  {len(outputs)} report files written to: {output_dir}/validation/")
+    print(f"{'=' * 60}")
+    for p in outputs:
+        rows = pd.read_parquet(p).shape[0]
+        print(f"  {p.name:<60}  ({rows:>7,} rows)")
 
-        print(f"\n{'='*60}")
-        print(f"  {len(outputs)} report files written to: {output_dir}/validation/")
-        print(f"{'='*60}")
-        for p in outputs:
-            rows = pd.read_parquet(p).shape[0]
-            print(f"  {p.name:<60}  ({rows:>7,} rows)")
+    # Preview one report
+    print("\n--- Sample univariate output ---")
+    uni = results["univariate"]
+    print(uni[uni["dimension"] == "assessed_value"].to_string(index=False))
 
-        # Preview one report
-        print("\n--- Sample univariate output ---")
-        uni = results["univariate"]
-        print(uni[uni["dimension"] == "assessed_value"].to_string(index=False))
-
-        print("\n--- Sample crosstab output (first 10 rows) ---")
-        tabs = results["tabulations"]
-        print(tabs.head(10).to_string(index=False))
+    print("\n--- Sample crosstab output (first 10 rows) ---")
+    tabs = results["tabulations"]
+    print(tabs.head(10).to_string(index=False))
 
 
 if __name__ == "__main__":
