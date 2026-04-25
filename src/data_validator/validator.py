@@ -1,6 +1,7 @@
 """
 DataValidator — DuckDB-powered data validation and profiling engine.
 """
+
 from __future__ import annotations
 
 import logging
@@ -28,12 +29,12 @@ log = logging.getLogger(__name__)
 # Long/skinny output schema
 # ---------------------------------------------------------------------------
 OUTPUT_COLUMNS = [
-    "source_file",      # basename of the input file
-    "report_type",      # e.g. "schema", "univariate", "frequency", "crosstab"
-    "metric",           # e.g. "mean", "count", "pct"
-    "dimension",        # column name or grouping key label
+    "source_file",  # basename of the input file
+    "report_type",  # e.g. "schema", "univariate", "frequency", "crosstab"
+    "metric",  # e.g. "mean", "count", "pct"
+    "dimension",  # column name or grouping key label
     "dimension_value",  # value within that dimension
-    "value",            # numeric result (all outputs normalised to float)
+    "value",  # numeric result (all outputs normalised to float)
 ]
 
 
@@ -152,6 +153,9 @@ class DataValidator:
 
     def _save(self, df: pd.DataFrame, report_name: str) -> Path:
         """Enforce the long/skinny schema and write to parquet."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
         # Ensure all canonical columns are present
         for col in OUTPUT_COLUMNS:
             if col not in df.columns:
@@ -159,9 +163,44 @@ class DataValidator:
         df = df[OUTPUT_COLUMNS].copy()
         df["value"] = pd.to_numeric(df["value"], errors="coerce")
 
+        # Enforce explicit dtypes so the schema is stable regardless of whether
+        # a column happens to be all-None in a given report.
+        df = df.astype(
+            {
+                "source_file": "string",
+                "report_type": "string",
+                "metric": "string",
+                "dimension": "string",
+                "dimension_value": "string",
+                "value": "float64",
+            }
+        )
+
+        # Write with explicit PyArrow schema and Parquet v2 data page format.
+        # This avoids the "Repetition level histogram size mismatch" error that
+        # Data Wrangler and older PyArrow readers produce when reading files
+        # written with mixed or implicit schemas.
+        schema = pa.schema(
+            [
+                pa.field("source_file", pa.string()),
+                pa.field("report_type", pa.string()),
+                pa.field("metric", pa.string()),
+                pa.field("dimension", pa.string()),
+                pa.field("dimension_value", pa.string()),
+                pa.field("value", pa.float64()),
+            ]
+        )
+
         fname = f"{report_name}__{self._source_stem}.parquet"
         out_path = self._validation_dir / fname
-        df.to_parquet(out_path, index=False)
+        table = pa.Table.from_pandas(df, schema=schema, preserve_index=False)
+        pq.write_table(
+            table,
+            out_path,
+            data_page_version="2.0",
+            write_statistics=True,
+            compression="snappy",
+        )
         log.info("Saved %s (%d rows) → %s", report_name, len(df), out_path)
         return out_path
 
@@ -212,9 +251,7 @@ class DataValidator:
     def run_string_components(self, delimiter: Optional[str] = None) -> pd.DataFrame:
         """Token-level frequency table for string columns."""
         delim = delimiter or self.string_delimiter
-        df = report_string_components(
-            self._con, "src", self.source_path.name, delim
-        )
+        df = report_string_components(self._con, "src", self.source_path.name, delim)
         if not df.empty:
             self._save(df, "string_components")
         return df
@@ -263,14 +300,16 @@ class DataValidator:
                 # Build the dimension_value as a composite key string
                 dim_parts = [f"{d}={row[d]}" for d in spec.dimensions]
                 dim_value = "|".join(str(p) for p in dim_parts)
-                rows.append({
-                    "source_file": self.source_path.name,
-                    "report_type": "crosstab",
-                    "metric": stat.name,
-                    "dimension": spec.label,
-                    "dimension_value": dim_value,
-                    "value": row["_stat_value"],
-                })
+                rows.append(
+                    {
+                        "source_file": self.source_path.name,
+                        "report_type": "crosstab",
+                        "metric": stat.name,
+                        "dimension": spec.label,
+                        "dimension_value": dim_value,
+                        "value": row["_stat_value"],
+                    }
+                )
 
             df_stat = pd.DataFrame(rows)
             all_rows.append(df_stat)
