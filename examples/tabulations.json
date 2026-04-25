@@ -1,0 +1,33 @@
+{
+  "tabulations": [
+    {
+      "label": "year_prov_housing",
+      "dimensions": ["year", "province", "housing_type"],
+      "filters": "year >= 2018",
+      "stats": [
+        {"name": "dwelling_count",        "expression": "COUNT(*)"},
+        {"name": "avg_assessed_value",    "expression": "AVG(assessed_value)"},
+        {"name": "median_assessed_value", "expression": "MEDIAN(assessed_value)"},
+        {"name": "total_assessed_value",  "expression": "SUM(assessed_value)"}
+      ]
+    },
+    {
+      "label": "year_cmaca_tenure",
+      "dimensions": ["year", "cma_ca_type", "tenure"],
+      "stats": [
+        {"name": "dwelling_count",   "expression": "COUNT(*)"},
+        {"name": "vacancy_rate_pct", "expression": "100.0 * SUM(is_vacant) / NULLIF(COUNT(*), 0)"},
+        {"name": "avg_rooms",        "expression": "AVG(n_rooms)"}
+      ]
+    },
+    {
+      "label": "owned_prov_housing_value",
+      "dimensions": ["province", "housing_type"],
+      "filters": "tenure = 'Owned'",
+      "stats": [
+        {"name": "total_assessed_value", "expression": "SUM(assessed_value)"},
+        {"name": "p90_assessed_value",   "expression": "PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY assessed_value)"}
+      ]
+    }
+  ]
+}

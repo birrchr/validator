@@ -1,0 +1,74 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "data-validator"
+version = "0.1.0"
+description = "DuckDB-powered data validation and profiling tool."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "duckdb>=0.10.0",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+]
+
+[project.optional-dependencies]
+delta = ["duckdb-delta"]
+yaml  = ["pyyaml>=6.0"]
+dev   = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "pyyaml>=6.0",
+]
+all = [
+    "duckdb-delta",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+data-validate = "data_validator.cli:main"
+
+# ---------------------------------------------------------------------------
+# uv
+# ---------------------------------------------------------------------------
+# uv reads [tool.uv] for resolver/workspace behaviour.
+# Run `uv lock` after editing dependencies to regenerate uv.lock.
+
+[tool.uv]
+# Pin the Python interpreter used by `uv run` / `uv sync`.
+# Override per-environment with: uv sync --python 3.12
+python = "3.12"
+
+# Always include dev extras in the local development environment.
+# CI or production installs should use: uv sync --no-dev
+dev-dependencies = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "pyyaml>=6.0",
+]
+
+# Publish to Artifactory via: uv publish --index internal
+# Credentials are read from UV_PUBLISH_TOKEN or keyring.
+[[tool.uv.index]]
+name     = "internal"
+url      = "https://your-artifactory/simple"   # ← update this
+publish-url = "https://your-artifactory/simple" # ← update this
+explicit = true   # only used when referenced by name; PyPI still used for everything else
+
+# ---------------------------------------------------------------------------
+# hatchling (build backend — uv invokes this transparently)
+# ---------------------------------------------------------------------------
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/data_validator"]
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "--tb=short -q"
