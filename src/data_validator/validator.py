@@ -118,16 +118,26 @@ class DataValidator:
                 f"CREATE OR REPLACE VIEW src AS SELECT * FROM read_parquet('{p}')"
             )
         elif suffix == "" or p.is_dir():
-            # Delta Lake directory — requires delta extension
+            # Delta Lake directory.
+            # DuckDB autoloads the delta extension on first use in internet-
+            # connected environments. In air-gapped environments, pre-load it
+            # via the duckdb-extension-delta PyPI package:
+            #   uv sync --extra delta
+            # then call: from duckdb_extensions import import_extension
+            #             import_extension("delta")
+            # before constructing DataValidator.
             try:
-                self._con.execute("INSTALL delta; LOAD delta;")
+                self._con.execute("LOAD delta;")
                 self._con.execute(
                     f"CREATE OR REPLACE VIEW src AS SELECT * FROM delta_scan('{p}')"
                 )
             except Exception as exc:
                 raise RuntimeError(
                     f"Could not read Delta Lake at '{p}'. "
-                    "Ensure the duckdb-delta extension is available."
+                    "In internet-connected environments DuckDB autoloads the delta "
+                    "extension on first use. In air-gapped environments, install "
+                    "duckdb-extension-delta (uv sync --extra delta) and call "
+                    "import_extension('delta') before constructing DataValidator."
                 ) from exc
         else:
             raise ValueError(
