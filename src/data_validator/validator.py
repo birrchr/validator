@@ -152,57 +152,116 @@ class DataValidator:
     # ------------------------------------------------------------------
 
     def _save(self, df: pd.DataFrame, report_name: str) -> Path:
-        """Enforce the long/skinny schema and write to parquet."""
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-
-        # Ensure all canonical columns are present
+        """Enforce schema and use DuckDB to write the file directly."""
+        # 1. Standardize columns in Pandas
         for col in OUTPUT_COLUMNS:
             if col not in df.columns:
                 df[col] = None
+
         df = df[OUTPUT_COLUMNS].copy()
-        df["value"] = pd.to_numeric(df["value"], errors="coerce")
+        df["value"] = pd.to_numeric(df["value"], errors="coerce").astype("float64")
 
-        # Enforce explicit dtypes so the schema is stable regardless of whether
-        # a column happens to be all-None in a given report.
-        df = df.astype(
-            {
-                "source_file": "string",
-                "report_type": "string",
-                "metric": "string",
-                "dimension": "string",
-                "dimension_value": "string",
-                "value": "float64",
-            }
-        )
-
-        # Write with explicit PyArrow schema and Parquet v2 data page format.
-        # This avoids the "Repetition level histogram size mismatch" error that
-        # Data Wrangler and older PyArrow readers produce when reading files
-        # written with mixed or implicit schemas.
-        schema = pa.schema(
-            [
-                pa.field("source_file", pa.string()),
-                pa.field("report_type", pa.string()),
-                pa.field("metric", pa.string()),
-                pa.field("dimension", pa.string()),
-                pa.field("dimension_value", pa.string()),
-                pa.field("value", pa.float64()),
-            ]
-        )
+        # 2. Register the cleaned DF back to DuckDB temporarily
+        self._con.register("tmp_report", df)
 
         fname = f"{report_name}__{self._source_stem}.parquet"
         out_path = self._validation_dir / fname
-        table = pa.Table.from_pandas(df, schema=schema, preserve_index=False)
-        pq.write_table(
-            table,
-            out_path,
-            data_page_version="2.0",
-            write_statistics=True,
-            compression="snappy",
-        )
-        log.info("Saved %s (%d rows) → %s", report_name, len(df), out_path)
+
+        # 3. Use DuckDB's native Parquet writer
+        # This is the 'Nuclear Option' to ensure the file is spec-compliant
+        self._con.execute(f"""
+                COPY (SELECT * FROM tmp_report) 
+                TO '{out_path}' 
+                (FORMAT 'PARQUET', COMPRESSION 'snappy')
+            """)
+
+        self._con.unregister("tmp_report")
+
+        log.info("Saved %s via DuckDB Native → %s", report_name, out_path)
         return out_path
+
+    # def _save(self, df: pd.DataFrame, report_name: str) -> Path:
+    #     """
+    #     Enforce a flat, long/skinny schema and write to parquet.
+    #     Specifically engineered to bypass 'Repetition level mismatch' errors
+    #     by eliminating mixed types and nested metadata.
+    #     """
+    #     # 1. Ensure all canonical columns are present
+    #     for col in OUTPUT_COLUMNS:
+    #         if col not in df.columns:
+    #             df[col] = None
+
+    #     # 2. Select and Copy to break any memory references to views
+    #     df = df[OUTPUT_COLUMNS].copy()
+
+    #     # 3. FORCE STRING: Data Wrangler often crashes on nullable string columns.
+    #     # We fill NAs with an empty string and force the cast to a primitive string.
+    #     str_cols = [
+    #         "source_file",
+    #         "report_type",
+    #         "metric",
+    #         "dimension",
+    #         "dimension_value",
+    #     ]
+    #     for col in str_cols:
+    #         df[col] = df[col].fillna("").astype(str)
+
+    #     # 4. FORCE NUMERIC: Ensure the 'value' column is a simple 64-bit float.
+    #     # This prevents 'object' types which can hide nested arrays/lists.
+    #     df["value"] = pd.to_numeric(df["value"], errors="coerce").astype("float64")
+
+    #     # 5. RESET INDEX: Prevents Pandas from writing a hidden '__index_level_0__'
+    #     # column in the Parquet metadata, which can cause reading inconsistencies.
+    #     df.reset_index(drop=True, inplace=True)
+
+    #     fname = f"{report_name}__{self._source_stem}.parquet"
+    #     out_path = self._validation_dir / fname
+
+    #     # 6. WRITE WITH STABLE SPECS:
+    #     # version='2.6' is the most compatible version for VS Code's PyArrow backend.
+    #     df.to_parquet(
+    #         out_path, index=False, engine="pyarrow", version="2.6", compression="snappy"
+    #     )
+
+    #     log.info("Saved %s (%d rows) → %s", report_name, len(df), out_path)
+    #     return out_path
+
+    # def _save(self, df: pd.DataFrame, report_name: str) -> Path:
+    #     """Enforce the long/skinny schema and write to parquet with stable settings."""
+    #     # Ensure all canonical columns are present
+    #     for col in OUTPUT_COLUMNS:
+    #         if col not in df.columns:
+    #             df[col] = None
+
+    #     df = df[OUTPUT_COLUMNS].copy()
+
+    #     # FIX: Explicitly cast string columns to the 'string' dtype.
+    #     # This prevents 'object' type inference, which is the root cause
+    #     # of the repetition level metadata issues.
+    #     str_cols = [
+    #         "source_file",
+    #         "report_type",
+    #         "metric",
+    #         "dimension",
+    #         "dimension_value",
+    #     ]
+    #     for col in str_cols:
+    #         df[col] = df[col].astype("string")
+
+    #     # Ensure numeric type
+    #     df["value"] = pd.to_numeric(df["value"], errors="coerce")
+
+    #     fname = f"{report_name}__{self._source_stem}.parquet"
+    #     out_path = self._validation_dir / fname
+
+    #     # FIX: Use engine='pyarrow' and version='2.6'.
+    #     # Version 2.6 is the "gold standard" for compatibility across most tools.
+    #     df.to_parquet(
+    #         out_path, index=False, engine="pyarrow", version="2.6", compression="snappy"
+    #     )
+
+    #     log.info("Saved %s (%d rows) → %s", report_name, len(df), out_path)
+    #     return out_path
 
     # ------------------------------------------------------------------
     # Public API — individual reports
