@@ -2,6 +2,7 @@
 Individual report modules. Each accepts a DuckDB connection and a registered
 view/table name, and returns a long-skinny DataFrame suitable for stacking.
 """
+
 from __future__ import annotations
 import duckdb
 import pandas as pd
@@ -12,13 +13,26 @@ from typing import List, Optional
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _classify_columns(con: duckdb.DuckDBPyConnection, table: str):
     """Return lists of numeric, categorical, and string column names."""
     schema_df = con.execute(f"DESCRIBE {table}").df()
     numeric_types = {
-        "BIGINT", "HUGEINT", "INTEGER", "INT", "SMALLINT", "TINYINT",
-        "UBIGINT", "UINTEGER", "USMALLINT", "UTINYINT",
-        "DOUBLE", "FLOAT", "DECIMAL", "REAL", "NUMERIC",
+        "BIGINT",
+        "HUGEINT",
+        "INTEGER",
+        "INT",
+        "SMALLINT",
+        "TINYINT",
+        "UBIGINT",
+        "UINTEGER",
+        "USMALLINT",
+        "UTINYINT",
+        "DOUBLE",
+        "FLOAT",
+        "DECIMAL",
+        "REAL",
+        "NUMERIC",
         "INTERVAL",
     }
     numeric_cols, categorical_cols, string_cols = [], [], []
@@ -54,7 +68,9 @@ def _long_frame(
         "report_type": report_type,
         "metric": metric,
         "dimension": dimension,
-        "dimension_value": str(dimension_value) if dimension_value is not None else None,
+        "dimension_value": str(dimension_value)
+        if dimension_value is not None
+        else None,
         "value": float(value) if value is not None else None,
     }
     if extra:
@@ -66,6 +82,7 @@ def _long_frame(
 # 1. Schema report
 # ---------------------------------------------------------------------------
 
+
 def report_schema(
     con: duckdb.DuckDBPyConnection,
     table: str,
@@ -76,37 +93,44 @@ def report_schema(
     row_count = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
     rows = []
     for _, r in schema_df.iterrows():
-        rows.append(_long_frame(
+        rows.append(
+            _long_frame(
+                source_file=source_file,
+                report_type="schema",
+                metric="column_type",
+                dimension=r["column_name"],
+                dimension_value=r["column_type"],
+                value=None,
+            )
+        )
+    rows.append(
+        _long_frame(
             source_file=source_file,
             report_type="schema",
-            metric="column_type",
-            dimension=r["column_name"],
-            dimension_value=r["column_type"],
-            value=None,
-        ))
-    rows.append(_long_frame(
-        source_file=source_file,
-        report_type="schema",
-        metric="row_count",
-        dimension=None,
-        dimension_value=None,
-        value=row_count,
-    ))
+            metric="row_count",
+            dimension=None,
+            dimension_value=None,
+            value=row_count,
+        )
+    )
     col_count = len(schema_df)
-    rows.append(_long_frame(
-        source_file=source_file,
-        report_type="schema",
-        metric="column_count",
-        dimension=None,
-        dimension_value=None,
-        value=col_count,
-    ))
+    rows.append(
+        _long_frame(
+            source_file=source_file,
+            report_type="schema",
+            metric="column_count",
+            dimension=None,
+            dimension_value=None,
+            value=col_count,
+        )
+    )
     return pd.DataFrame(rows)
 
 
 # ---------------------------------------------------------------------------
 # 2. Duplicate reports
 # ---------------------------------------------------------------------------
+
 
 def _hash_expr(columns: List[str]) -> str:
     """
@@ -160,9 +184,9 @@ def report_true_duplicates(
         SELECT total_rows, rows_in_dup_buckets, dup_hash_buckets, unique_hashes
         FROM summary
     """
-    total, rows_in_dup_buckets, dup_hash_buckets, unique_hashes = (
-        con.execute(q).fetchone()
-    )
+    total, rows_in_dup_buckets, dup_hash_buckets, unique_hashes = con.execute(
+        q
+    ).fetchone()
 
     duplicate_rows = 0
     if dup_hash_buckets and dup_hash_buckets > 0:
@@ -183,13 +207,32 @@ def report_true_duplicates(
 
     unique_rows = total - duplicate_rows
     rows = [
-        _long_frame(source_file, "true_duplicates", "total_rows",     None, None, total),
-        _long_frame(source_file, "true_duplicates", "duplicate_rows",  None, None, duplicate_rows),
-        _long_frame(source_file, "true_duplicates", "unique_rows",    None, None, unique_rows),
-        _long_frame(source_file, "true_duplicates", "duplicate_pct",  None, None,
-                    round(100.0 * duplicate_rows / total, 4) if total > 0 else 0.0),
-        _long_frame(source_file, "true_duplicates", "unique_hashes",     None, None, unique_hashes),
-        _long_frame(source_file, "true_duplicates", "dup_hash_buckets",  None, None, dup_hash_buckets or 0),
+        _long_frame(source_file, "true_duplicates", "total_rows", None, None, total),
+        _long_frame(
+            source_file, "true_duplicates", "duplicate_rows", None, None, duplicate_rows
+        ),
+        _long_frame(
+            source_file, "true_duplicates", "unique_rows", None, None, unique_rows
+        ),
+        _long_frame(
+            source_file,
+            "true_duplicates",
+            "duplicate_pct",
+            None,
+            None,
+            round(100.0 * duplicate_rows / total, 4) if total > 0 else 0.0,
+        ),
+        _long_frame(
+            source_file, "true_duplicates", "unique_hashes", None, None, unique_hashes
+        ),
+        _long_frame(
+            source_file,
+            "true_duplicates",
+            "dup_hash_buckets",
+            None,
+            None,
+            dup_hash_buckets or 0,
+        ),
     ]
     return pd.DataFrame(rows)
 
@@ -223,9 +266,9 @@ def report_id_duplicates(
             COUNT(*)                                       AS unique_hashes
         FROM hashed
     """
-    total, rows_in_dup_buckets, dup_hash_buckets, unique_hashes = (
-        con.execute(q).fetchone()
-    )
+    total, rows_in_dup_buckets, dup_hash_buckets, unique_hashes = con.execute(
+        q
+    ).fetchone()
 
     duplicate_rows = 0
     if dup_hash_buckets and dup_hash_buckets > 0:
@@ -247,12 +290,34 @@ def report_id_duplicates(
     unique_keys = unique_hashes
     id_label = "+".join(id_columns)
     rows = [
-        _long_frame(source_file, "id_duplicates", "total_rows",       id_label, None, total),
-        _long_frame(source_file, "id_duplicates", "duplicate_rows",    id_label, None, duplicate_rows),
-        _long_frame(source_file, "id_duplicates", "unique_keys",      id_label, None, unique_keys),
-        _long_frame(source_file, "id_duplicates", "duplicate_pct",    id_label, None,
-                    round(100.0 * duplicate_rows / total, 4) if total > 0 else 0.0),
-        _long_frame(source_file, "id_duplicates", "dup_hash_buckets", id_label, None, dup_hash_buckets or 0),
+        _long_frame(source_file, "id_duplicates", "total_rows", id_label, None, total),
+        _long_frame(
+            source_file,
+            "id_duplicates",
+            "duplicate_rows",
+            id_label,
+            None,
+            duplicate_rows,
+        ),
+        _long_frame(
+            source_file, "id_duplicates", "unique_keys", id_label, None, unique_keys
+        ),
+        _long_frame(
+            source_file,
+            "id_duplicates",
+            "duplicate_pct",
+            id_label,
+            None,
+            round(100.0 * duplicate_rows / total, 4) if total > 0 else 0.0,
+        ),
+        _long_frame(
+            source_file,
+            "id_duplicates",
+            "dup_hash_buckets",
+            id_label,
+            None,
+            dup_hash_buckets or 0,
+        ),
     ]
     return pd.DataFrame(rows)
 
@@ -260,6 +325,7 @@ def report_id_duplicates(
 # ---------------------------------------------------------------------------
 # 3. Univariate statistics (numeric)
 # ---------------------------------------------------------------------------
+
 
 def report_univariate(
     con: duckdb.DuckDBPyConnection,
@@ -300,14 +366,19 @@ def report_univariate(
             FROM {table}
         """
         r = con.execute(q).fetchone()
-        (n_non_null, n_null, mn, mx, mean, median, std, var,
-         p25, p75, approx_dist) = r
+        (n_non_null, n_null, mn, mx, mean, median, std, var, p25, p75, approx_dist) = r
 
         for metric, val in [
-            ("n_non_null", n_non_null), ("n_null", n_null),
-            ("min", mn), ("max", mx), ("mean", mean), ("median", median),
-            ("stddev", std), ("variance", var),
-            ("p25", p25), ("p75", p75),
+            ("n_non_null", n_non_null),
+            ("n_null", n_null),
+            ("min", mn),
+            ("max", mx),
+            ("mean", mean),
+            ("median", median),
+            ("stddev", std),
+            ("variance", var),
+            ("p25", p25),
+            ("p75", p75),
             ("approx_distinct", approx_dist),
         ]:
             rows.append(_long_frame(source_file, "univariate", metric, col, None, val))
@@ -319,8 +390,8 @@ def report_univariate(
                     LEAST(
                         {n_histogram_bins},
                         CAST(FLOOR(
-                            ({n_histogram_bins} * (CAST("{col}" AS DOUBLE) - {mn}))
-                            / ({mx} - {mn})
+                            ({n_histogram_bins} * (CAST("{col}" AS DOUBLE) - CAST({mn} AS DOUBLE)))
+                            / (CAST({mx} AS DOUBLE) - CAST({mn} AS DOUBLE))
                         ) AS INTEGER) + 1
                     ) AS bin,
                     COUNT(*) AS freq
@@ -332,10 +403,16 @@ def report_univariate(
             bin_rows = con.execute(bin_q).fetchall()
             for bin_num, freq in bin_rows:
                 bin_label = f"hist_bin_{bin_num:03d}"
-                rows.append(_long_frame(
-                    source_file, "univariate_histogram", "frequency",
-                    col, bin_label, freq
-                ))
+                rows.append(
+                    _long_frame(
+                        source_file,
+                        "univariate_histogram",
+                        "frequency",
+                        col,
+                        bin_label,
+                        freq,
+                    )
+                )
 
     return pd.DataFrame(rows)
 
@@ -343,6 +420,7 @@ def report_univariate(
 # ---------------------------------------------------------------------------
 # 4. Frequency distributions (categorical)
 # ---------------------------------------------------------------------------
+
 
 def report_frequency(
     con: duckdb.DuckDBPyConnection,
@@ -364,10 +442,16 @@ def report_frequency(
         ).fetchone()[0]
 
         if distinct_count > max_categories:
-            rows.append(_long_frame(
-                source_file, "frequency", "skipped_high_cardinality",
-                col, str(distinct_count), None
-            ))
+            rows.append(
+                _long_frame(
+                    source_file,
+                    "frequency",
+                    "skipped_high_cardinality",
+                    col,
+                    str(distinct_count),
+                    None,
+                )
+            )
             continue
 
         q = f"""
@@ -380,15 +464,26 @@ def report_frequency(
         """
         freq_rows = con.execute(q).fetchall()
         for val, freq in freq_rows:
-            rows.append(_long_frame(
-                source_file, "frequency", "count",
-                col, val if val is not None else "__NULL__", freq
-            ))
-            rows.append(_long_frame(
-                source_file, "frequency", "pct",
-                col, val if val is not None else "__NULL__",
-                round(100.0 * freq / total, 4) if total > 0 else 0.0
-            ))
+            rows.append(
+                _long_frame(
+                    source_file,
+                    "frequency",
+                    "count",
+                    col,
+                    val if val is not None else "__NULL__",
+                    freq,
+                )
+            )
+            rows.append(
+                _long_frame(
+                    source_file,
+                    "frequency",
+                    "pct",
+                    col,
+                    val if val is not None else "__NULL__",
+                    round(100.0 * freq / total, 4) if total > 0 else 0.0,
+                )
+            )
 
     return pd.DataFrame(rows)
 
@@ -396,6 +491,7 @@ def report_frequency(
 # ---------------------------------------------------------------------------
 # 5. String component frequency
 # ---------------------------------------------------------------------------
+
 
 def report_string_components(
     con: duckdb.DuckDBPyConnection,
@@ -428,9 +524,8 @@ def report_string_components(
         """
         comp_rows = con.execute(q).fetchall()
         for comp, freq in comp_rows:
-            rows.append(_long_frame(
-                source_file, "string_components", "count",
-                col, comp, freq
-            ))
+            rows.append(
+                _long_frame(source_file, "string_components", "count", col, comp, freq)
+            )
 
     return pd.DataFrame(rows)
