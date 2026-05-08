@@ -29,18 +29,36 @@ log = logging.getLogger(__name__)
 # Long/skinny output schema
 # ---------------------------------------------------------------------------
 OUTPUT_COLUMNS = [
-    "source_file",  # basename of the input file
-    "report_type",  # e.g. "schema", "univariate", "frequency", "crosstab"
-    "metric",  # e.g. "mean", "count", "pct"
-    "dimension",  # column name or grouping key label
+    "source_file",      # basename of the input file
+    "report_type",      # e.g. "schema", "univariate", "frequency", "crosstab"
+    "metric",           # e.g. "mean", "count", "pct"
+    "dimension",        # column name or grouping key label
     "dimension_value",  # value within that dimension
-    "value",  # numeric result (all outputs normalised to float)
+    "value",            # numeric result (all outputs normalised to float)
 ]
 
 
 def _sanitize(name: str) -> str:
-    """Make a string safe for use in file names."""
+    """Make a string safe for use in file names and folder names."""
     return re.sub(r"[^\w]+", "_", name).strip("_").lower()
+
+
+def _duckdb_write(con: duckdb.DuckDBPyConnection, df: pd.DataFrame, out_path: Path) -> None:
+    """
+    Write a DataFrame to Parquet using DuckDB's native COPY writer.
+
+    This produces Parquet V1 files that are readable by all PyArrow versions
+    including older Anaconda installs, avoiding the 'Repetition level histogram
+    size mismatch' error that PyArrow 14+ writers produce by default.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    con.register("_tmp_write", df)
+    con.execute(f"""
+        COPY (SELECT * FROM _tmp_write)
+        TO '{out_path}'
+        (FORMAT 'PARQUET', COMPRESSION 'snappy', PARQUET_VERSION 'V1')
+    """)
+    con.unregister("_tmp_write")
 
 
 class DataValidator:
@@ -52,8 +70,9 @@ class DataValidator:
     source_path : str or Path
         Path to a Parquet file, Delta Lake directory, or CSV file.
     output_dir : str or Path
-        Root directory for validation output. Reports land in
-        ``{output_dir}/validation/``.
+        Root directory for validation output. Standard reports land in
+        ``{output_dir}/validation/``. Crosstab reports land in
+        ``{output_dir}/validation/{label}/``.
     id_columns : list of str, optional
         Column(s) that form the logical primary key for ID-duplicate checks.
     string_delimiter : str
@@ -119,14 +138,8 @@ class DataValidator:
                 f"CREATE OR REPLACE VIEW src AS SELECT * FROM read_parquet('{p}')"
             )
         elif suffix == "" or p.is_dir():
-            # Delta Lake directory.
-            # DuckDB autoloads the delta extension on first use in internet-
-            # connected environments. In air-gapped environments, pre-load it
-            # via the duckdb-extension-delta PyPI package:
-            #   uv sync --extra delta
-            # then call: from duckdb_extensions import import_extension
-            #             import_extension("delta")
-            # before constructing DataValidator.
+            # Delta Lake — autoloaded in internet-connected environments.
+            # For air-gapped use: uv sync --extra delta
             try:
                 self._con.execute("LOAD delta;")
                 self._con.execute(
@@ -137,8 +150,7 @@ class DataValidator:
                     f"Could not read Delta Lake at '{p}'. "
                     "In internet-connected environments DuckDB autoloads the delta "
                     "extension on first use. In air-gapped environments, install "
-                    "duckdb-extension-delta (uv sync --extra delta) and call "
-                    "import_extension('delta') before constructing DataValidator."
+                    "duckdb-extension-delta (uv sync --extra delta)."
                 ) from exc
         else:
             raise ValueError(
@@ -151,117 +163,51 @@ class DataValidator:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _save(self, df: pd.DataFrame, report_name: str) -> Path:
-        """Enforce schema and use DuckDB to write the file directly."""
-        # 1. Standardize columns in Pandas
+    def _enforce_schema(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Ensure all OUTPUT_COLUMNS are present and value is float64."""
         for col in OUTPUT_COLUMNS:
             if col not in df.columns:
                 df[col] = None
-
         df = df[OUTPUT_COLUMNS].copy()
         df["value"] = pd.to_numeric(df["value"], errors="coerce").astype("float64")
+        return df
 
-        # 2. Register the cleaned DF back to DuckDB temporarily
-        self._con.register("tmp_report", df)
+    def _save(self, df: pd.DataFrame, report_name: str) -> Path:
+        """
+        Enforce the long/skinny schema and write to parquet via DuckDB native
+        writer (PARQUET_VERSION V1) for maximum reader compatibility.
 
+        Output path: validation/{report_name}__{source_stem}.parquet
+        """
+        df = self._enforce_schema(df)
         fname = f"{report_name}__{self._source_stem}.parquet"
         out_path = self._validation_dir / fname
-
-        # 3. Use DuckDB's native Parquet writer
-        # This is the 'Nuclear Option' to ensure the file is spec-compliant
-        self._con.execute(f"""
-                COPY (SELECT * FROM tmp_report) 
-                TO '{out_path}' 
-                (FORMAT 'PARQUET', COMPRESSION 'snappy')
-            """)
-
-        self._con.unregister("tmp_report")
-
-        log.info("Saved %s via DuckDB Native → %s", report_name, out_path)
+        _duckdb_write(self._con, df, out_path)
+        log.info("Saved %s (%d rows) → %s", report_name, len(df), out_path)
         return out_path
 
-    # def _save(self, df: pd.DataFrame, report_name: str) -> Path:
-    #     """
-    #     Enforce a flat, long/skinny schema and write to parquet.
-    #     Specifically engineered to bypass 'Repetition level mismatch' errors
-    #     by eliminating mixed types and nested metadata.
-    #     """
-    #     # 1. Ensure all canonical columns are present
-    #     for col in OUTPUT_COLUMNS:
-    #         if col not in df.columns:
-    #             df[col] = None
+    def _save_crosstab(
+        self, df: pd.DataFrame, stat_name: str, label: str
+    ) -> Path:
+        """
+        Write a crosstab stat file into its own labelled subfolder.
 
-    #     # 2. Select and Copy to break any memory references to views
-    #     df = df[OUTPUT_COLUMNS].copy()
+        Output path:
+            validation/{label}/{stat_name}__{source_stem}.parquet
 
-    #     # 3. FORCE STRING: Data Wrangler often crashes on nullable string columns.
-    #     # We fill NAs with an empty string and force the cast to a primitive string.
-    #     str_cols = [
-    #         "source_file",
-    #         "report_type",
-    #         "metric",
-    #         "dimension",
-    #         "dimension_value",
-    #     ]
-    #     for col in str_cols:
-    #         df[col] = df[col].fillna("").astype(str)
-
-    #     # 4. FORCE NUMERIC: Ensure the 'value' column is a simple 64-bit float.
-    #     # This prevents 'object' types which can hide nested arrays/lists.
-    #     df["value"] = pd.to_numeric(df["value"], errors="coerce").astype("float64")
-
-    #     # 5. RESET INDEX: Prevents Pandas from writing a hidden '__index_level_0__'
-    #     # column in the Parquet metadata, which can cause reading inconsistencies.
-    #     df.reset_index(drop=True, inplace=True)
-
-    #     fname = f"{report_name}__{self._source_stem}.parquet"
-    #     out_path = self._validation_dir / fname
-
-    #     # 6. WRITE WITH STABLE SPECS:
-    #     # version='2.6' is the most compatible version for VS Code's PyArrow backend.
-    #     df.to_parquet(
-    #         out_path, index=False, engine="pyarrow", version="2.6", compression="snappy"
-    #     )
-
-    #     log.info("Saved %s (%d rows) → %s", report_name, len(df), out_path)
-    #     return out_path
-
-    # def _save(self, df: pd.DataFrame, report_name: str) -> Path:
-    #     """Enforce the long/skinny schema and write to parquet with stable settings."""
-    #     # Ensure all canonical columns are present
-    #     for col in OUTPUT_COLUMNS:
-    #         if col not in df.columns:
-    #             df[col] = None
-
-    #     df = df[OUTPUT_COLUMNS].copy()
-
-    #     # FIX: Explicitly cast string columns to the 'string' dtype.
-    #     # This prevents 'object' type inference, which is the root cause
-    #     # of the repetition level metadata issues.
-    #     str_cols = [
-    #         "source_file",
-    #         "report_type",
-    #         "metric",
-    #         "dimension",
-    #         "dimension_value",
-    #     ]
-    #     for col in str_cols:
-    #         df[col] = df[col].astype("string")
-
-    #     # Ensure numeric type
-    #     df["value"] = pd.to_numeric(df["value"], errors="coerce")
-
-    #     fname = f"{report_name}__{self._source_stem}.parquet"
-    #     out_path = self._validation_dir / fname
-
-    #     # FIX: Use engine='pyarrow' and version='2.6'.
-    #     # Version 2.6 is the "gold standard" for compatibility across most tools.
-    #     df.to_parquet(
-    #         out_path, index=False, engine="pyarrow", version="2.6", compression="snappy"
-    #     )
-
-    #     log.info("Saved %s (%d rows) → %s", report_name, len(df), out_path)
-    #     return out_path
+        The subfolder is named after the tabulation label (which encodes the
+        dimension breakdown, e.g. 'year_prov_housing'). This lets the unpacker
+        target a specific breakdown by pointing at its folder, and lets you
+        stack all files within a folder knowing they share the same dimensions.
+        """
+        df = self._enforce_schema(df)
+        subfolder = self._validation_dir / _sanitize(label)
+        subfolder.mkdir(parents=True, exist_ok=True)
+        fname = f"{_sanitize(stat_name)}__{self._source_stem}.parquet"
+        out_path = subfolder / fname
+        _duckdb_write(self._con, df, out_path)
+        log.info("Saved crosstab %s/%s (%d rows) → %s", label, stat_name, len(df), out_path)
+        return out_path
 
     # ------------------------------------------------------------------
     # Public API — individual reports
@@ -310,7 +256,9 @@ class DataValidator:
     def run_string_components(self, delimiter: Optional[str] = None) -> pd.DataFrame:
         """Token-level frequency table for string columns."""
         delim = delimiter or self.string_delimiter
-        df = report_string_components(self._con, "src", self.source_path.name, delim)
+        df = report_string_components(
+            self._con, "src", self.source_path.name, delim
+        )
         if not df.empty:
             self._save(df, "string_components")
         return df
@@ -323,11 +271,13 @@ class DataValidator:
         """
         Execute a user-defined cross-tabulation.
 
-        The result is stored as:
-            ``{stat_name}__{spec.label}__{source_stem}.parquet``
+        Output layout:
+            validation/{spec.label}/{stat_name}__{source_stem}.parquet
 
-        One parquet file is written per StatSpec so files can be independently
-        stacked in Power BI by metric name.
+        One parquet file is written per StatSpec inside a subfolder named
+        after the tabulation label. The label should describe the dimension
+        breakdown (e.g. 'year_prov_housing') so the folder name is self-
+        documenting and the unpacker can target it directly.
 
         Returns a combined DataFrame of all stats.
         """
@@ -356,26 +306,20 @@ class DataValidator:
 
             rows = []
             for _, row in result.iterrows():
-                # Build the dimension_value as a composite key string
                 dim_parts = [f"{d}={row[d]}" for d in spec.dimensions]
                 dim_value = "|".join(str(p) for p in dim_parts)
-                rows.append(
-                    {
-                        "source_file": self.source_path.name,
-                        "report_type": "crosstab",
-                        "metric": stat.name,
-                        "dimension": spec.label,
-                        "dimension_value": dim_value,
-                        "value": row["_stat_value"],
-                    }
-                )
+                rows.append({
+                    "source_file":     self.source_path.name,
+                    "report_type":     "crosstab",
+                    "metric":          stat.name,
+                    "dimension":       spec.label,
+                    "dimension_value": dim_value,
+                    "value":           row["_stat_value"],
+                })
 
             df_stat = pd.DataFrame(rows)
             all_rows.append(df_stat)
-
-            # One parquet per stat for independent Power BI stacking
-            report_name = f"{_sanitize(stat.name)}__{_sanitize(spec.label)}"
-            self._save(df_stat, report_name)
+            self._save_crosstab(df_stat, stat.name, spec.label)
 
         return pd.concat(all_rows, ignore_index=True) if all_rows else pd.DataFrame()
 
@@ -440,8 +384,8 @@ class DataValidator:
     # ------------------------------------------------------------------
 
     def list_outputs(self) -> List[Path]:
-        """Return all parquet files written to the validation directory."""
-        return sorted(self._validation_dir.glob("*.parquet"))
+        """Return all parquet files written, including crosstab subfolders."""
+        return sorted(self._validation_dir.rglob("*.parquet"))
 
     def preview(self, n: int = 5) -> pd.DataFrame:
         """Quick look at the source data."""

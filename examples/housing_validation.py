@@ -119,6 +119,10 @@ def main():
                     "p90_assessed_value",
                     "PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY assessed_value)",
                 ),
+                StatSpec(
+                    "p50_assessed_value",
+                    "PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY assessed_value)",
+                ),
             ],
             filters="tenure = 'Owned'",
             label="owned_prov_housing_value",

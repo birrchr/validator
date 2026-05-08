@@ -84,7 +84,6 @@ def report_schema(
             dimension_value=r["column_type"],
             value=None,
         ))
-    # overall row count
     rows.append(_long_frame(
         source_file=source_file,
         report_type="schema",
@@ -114,17 +113,10 @@ def _hash_expr(columns: List[str]) -> str:
     Build a DuckDB expression that hashes an arbitrary set of columns into a
     single UBIGINT fingerprint.
 
-    Strategy
-    --------
-    DuckDB's ``hash()`` accepts multiple arguments and combines them with an
-    internal mixing function, so ``hash(a, b, c)`` is both fast and
-    collision-resistant for practical dataset sizes.  We cast every column to
-    VARCHAR before hashing so that type differences (e.g. INTEGER 1 vs
-    DOUBLE 1.0) are surfaced as distinct values rather than collapsed, which
-    matches the semantics of "truly identical row."
-
-    NULL handling: DuckDB's hash() treats NULL as a distinct, stable value, so
-    two rows that are both NULL in the same columns will correctly match.
+    DuckDB's hash() accepts multiple arguments and combines them with an
+    internal mixing function. We cast every column to VARCHAR before hashing
+    so that type differences (e.g. INTEGER 1 vs DOUBLE 1.0) are surfaced as
+    distinct values. NULL is treated as a distinct, stable value.
     """
     cast_exprs = ", ".join(f'CAST("{c}" AS VARCHAR)' for c in columns)
     return f"hash({cast_exprs})"
@@ -139,14 +131,9 @@ def report_true_duplicates(
     Count fully duplicate rows using a fast row-hash strategy.
 
     All columns are hashed into a single UBIGINT fingerprint with DuckDB's
-    built-in ``hash()`` function.  Duplicates are then detected by a simple
-    GROUP BY + COUNT on that integer column — far cheaper than a multi-column
-    sort/PARTITION BY on wide tables.
-
-    A second pass confirms hash collisions are not false positives: any hash
-    bucket with count > 1 is re-verified with an exact-match COUNT DISTINCT on
-    the raw columns (only for buckets that triggered, so the extra cost is
-    proportional to actual duplicate density, not table width).
+    built-in hash() function. Duplicates are detected by GROUP BY + COUNT on
+    that integer — far cheaper than a multi-column sort/PARTITION BY on wide
+    tables. A second pass verifies hash collisions are not false positives.
     """
     schema_df = con.execute(f"DESCRIBE {table}").df()
     all_cols = schema_df["column_name"].tolist()
@@ -170,19 +157,13 @@ def report_true_duplicates(
                 COUNT(*)                                        AS unique_hashes
             FROM hashed
         )
-        SELECT
-            total_rows,
-            rows_in_dup_buckets,
-            dup_hash_buckets,
-            unique_hashes
+        SELECT total_rows, rows_in_dup_buckets, dup_hash_buckets, unique_hashes
         FROM summary
     """
     total, rows_in_dup_buckets, dup_hash_buckets, unique_hashes = (
         con.execute(q).fetchone()
     )
 
-    # Exact-match verification pass: recount within each flagged hash bucket.
-    # This catches the (rare) case of a hash collision between distinct rows.
     duplicate_rows = 0
     if dup_hash_buckets and dup_hash_buckets > 0:
         verify_q = f"""
@@ -202,14 +183,13 @@ def report_true_duplicates(
 
     unique_rows = total - duplicate_rows
     rows = [
-        _long_frame(source_file, "true_duplicates", "total_rows",    None, None, total),
-        _long_frame(source_file, "true_duplicates", "duplicate_rows", None, None, duplicate_rows),
-        _long_frame(source_file, "true_duplicates", "unique_rows",   None, None, unique_rows),
-        _long_frame(source_file, "true_duplicates", "duplicate_pct", None, None,
+        _long_frame(source_file, "true_duplicates", "total_rows",     None, None, total),
+        _long_frame(source_file, "true_duplicates", "duplicate_rows",  None, None, duplicate_rows),
+        _long_frame(source_file, "true_duplicates", "unique_rows",    None, None, unique_rows),
+        _long_frame(source_file, "true_duplicates", "duplicate_pct",  None, None,
                     round(100.0 * duplicate_rows / total, 4) if total > 0 else 0.0),
-        # diagnostics — useful for spotting hash collision rate
-        _long_frame(source_file, "true_duplicates", "unique_hashes",      None, None, unique_hashes),
-        _long_frame(source_file, "true_duplicates", "dup_hash_buckets",   None, None, dup_hash_buckets or 0),
+        _long_frame(source_file, "true_duplicates", "unique_hashes",     None, None, unique_hashes),
+        _long_frame(source_file, "true_duplicates", "dup_hash_buckets",  None, None, dup_hash_buckets or 0),
     ]
     return pd.DataFrame(rows)
 
@@ -222,10 +202,7 @@ def report_id_duplicates(
 ) -> pd.DataFrame:
     """
     Count rows with duplicate ID key(s) using a hash-based strategy.
-
-    The ID key is hashed to a single UBIGINT for fast grouping.  Exact-match
-    verification is applied to any hash bucket with count > 1 so that hash
-    collisions between distinct keys are never counted as duplicates.
+    Exact-match verification applied to any hash bucket with count > 1.
     """
     id_cols_sql = ", ".join(f'"{c}"' for c in id_columns)
     hash_expr = _hash_expr(id_columns)
@@ -250,7 +227,6 @@ def report_id_duplicates(
         con.execute(q).fetchone()
     )
 
-    # Exact-match verification for flagged buckets
     duplicate_rows = 0
     if dup_hash_buckets and dup_hash_buckets > 0:
         verify_q = f"""
@@ -268,13 +244,13 @@ def report_id_duplicates(
         result = con.execute(verify_q).fetchone()[0]
         duplicate_rows = int(result) if result is not None else 0
 
-    unique_keys = unique_hashes  # one hash = one unique key after verification
+    unique_keys = unique_hashes
     id_label = "+".join(id_columns)
     rows = [
-        _long_frame(source_file, "id_duplicates", "total_rows",    id_label, None, total),
-        _long_frame(source_file, "id_duplicates", "duplicate_rows", id_label, None, duplicate_rows),
-        _long_frame(source_file, "id_duplicates", "unique_keys",   id_label, None, unique_keys),
-        _long_frame(source_file, "id_duplicates", "duplicate_pct", id_label, None,
+        _long_frame(source_file, "id_duplicates", "total_rows",       id_label, None, total),
+        _long_frame(source_file, "id_duplicates", "duplicate_rows",    id_label, None, duplicate_rows),
+        _long_frame(source_file, "id_duplicates", "unique_keys",      id_label, None, unique_keys),
+        _long_frame(source_file, "id_duplicates", "duplicate_pct",    id_label, None,
                     round(100.0 * duplicate_rows / total, 4) if total > 0 else 0.0),
         _long_frame(source_file, "id_duplicates", "dup_hash_buckets", id_label, None, dup_hash_buckets or 0),
     ]
@@ -298,19 +274,29 @@ def report_univariate(
 
     rows = []
     for col in numeric_cols:
+        # STDDEV_SAMP and VARIANCE return NULL for 0 or 1 non-null rows.
+        # PERCENTILE_CONT returns NULL for all-null columns.
+        # We wrap these in COALESCE where a null result is valid and expected,
+        # and handle None values gracefully in the output loop below.
         q = f"""
             SELECT
-                COUNT("{col}")                          AS n_non_null,
-                COUNT(*) - COUNT("{col}")               AS n_null,
-                MIN("{col}")                            AS min_val,
-                MAX("{col}")                            AS max_val,
-                AVG("{col}")                            AS mean_val,
-                MEDIAN("{col}")                         AS median_val,
-                STDDEV_SAMP("{col}")                    AS stddev_val,
-                VARIANCE("{col}")                       AS variance_val,
-                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY "{col}") AS p25,
-                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY "{col}") AS p75,
-                APPROX_COUNT_DISTINCT("{col}")          AS approx_distinct
+                COUNT("{col}")                                              AS n_non_null,
+                COUNT(*) - COUNT("{col}")                                   AS n_null,
+                MIN("{col}")                                                AS min_val,
+                MAX("{col}")                                                AS max_val,
+                AVG("{col}")                                                AS mean_val,
+                MEDIAN("{col}")                                             AS median_val,
+                CASE WHEN COUNT("{col}") > 1
+                     THEN STDDEV_SAMP("{col}") ELSE NULL END               AS stddev_val,
+                CASE WHEN COUNT("{col}") > 1
+                     THEN VARIANCE("{col}") ELSE NULL END                  AS variance_val,
+                CASE WHEN COUNT("{col}") > 0
+                     THEN PERCENTILE_CONT(0.25) WITHIN GROUP
+                          (ORDER BY "{col}") ELSE NULL END                  AS p25,
+                CASE WHEN COUNT("{col}") > 0
+                     THEN PERCENTILE_CONT(0.75) WITHIN GROUP
+                          (ORDER BY "{col}") ELSE NULL END                  AS p75,
+                APPROX_COUNT_DISTINCT("{col}")                              AS approx_distinct
             FROM {table}
         """
         r = con.execute(q).fetchone()
@@ -326,8 +312,7 @@ def report_univariate(
         ]:
             rows.append(_long_frame(source_file, "univariate", metric, col, None, val))
 
-        # Histogram bins — use FLOOR-based bucketing for compatibility across
-        # all DuckDB versions (width_bucket availability varies by version).
+        # Histogram bins — FLOOR-based bucketing, compatible across all DuckDB versions.
         if mn is not None and mx is not None and mn != mx:
             bin_q = f"""
                 SELECT

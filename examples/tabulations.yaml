@@ -31,3 +31,5 @@ tabulations:
         expression: "SUM(assessed_value)"
       - name: p90_assessed_value
         expression: "PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY assessed_value)"
+      - name: p50_assessed_value
+        expression: "PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY assessed_value)"
